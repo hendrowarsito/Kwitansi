@@ -201,31 +201,40 @@ def extract_proposal_data(file_bytes: bytes, filename: str) -> dict:
         doc = Document(io.BytesIO(file_bytes))
         raw_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
-    # Limit text to ~6000 chars for API efficiency
-    raw_text = raw_text[:6000]
+    # Limit text to ~8000 chars — tambah batas agar bagian fee tidak terpotong
+    raw_text = raw_text[:8000]
 
     client = anthropic.Anthropic()
-    prompt = f"""Kamu adalah asisten ekstraksi data dari proposal jasa penilaian KJPP SRR.
+    prompt = f"""Kamu adalah asisten ekstraksi data dari proposal jasa penilaian KJPP SRR (Suwendho Rinaldy dan Rekan).
 
-Ekstrak informasi berikut dari teks proposal di bawah dan kembalikan HANYA JSON (tanpa komentar, tanpa markdown).
+Ekstrak informasi berikut dari teks proposal dan kembalikan HANYA JSON valid (tanpa komentar, tanpa markdown backtick).
 
-Field yang dibutuhkan:
-- nama_klien: nama lengkap perusahaan klien
-- nama_klien_singkat: akronim/kode klien (contoh: PTRO, IDXSTI, KMS)
-- alamat_baris1: baris pertama alamat
-- alamat_baris2: baris kedua alamat (jalan, dll)
-- kota: nama kota
-- kode_pos: kode pos (string)
-- up: jabatan yang dituju (contoh: Direksi)
-- jenis_pekerjaan: deskripsi singkat jenis pekerjaan (contoh: Penilaian Saham dan Pendapat Kewajaran)
-- nomor_proposal: nomor proposal (contoh: 260112.001/SRR-JK/SPN-ABF/PTRO/OR)
-- tanggal_proposal: tanggal proposal dalam format "DD Bulan YYYY" (contoh: 12 Januari 2026)
-- imbalan_jasa_total: total imbalan jasa sebelum PPN dalam angka integer (ambil dari baris "Jumlah Imbalan Jasa/Fee")
-- tanggal_tagihan: tanggal penilaian/cut-off yang disebutkan, atau tanggal surat jika tidak ada, format "DD Bulan YYYY"
-- receiver: nama penandatangan dari SRR (biasanya Ocky Rinaldy)
+PETUNJUK PENTING untuk imbalan_jasa_total:
+- Cari bagian "Imbalan Jasa", "Fee", atau "Biaya" dalam proposal
+- Ambil TOTAL sebelum PPN (bukan nilai setelah ditambah PPN)
+- Jika ada beberapa komponen fee (misal: Penilaian Aset + Penilaian Saham), JUMLAHKAN semuanya
+- Nilai ini biasanya ada di baris "Jumlah Imbalan Jasa/Fee" atau "Total Fee"
+- Contoh: "Rp 200.000.000" → 200000000, "Rp 1.025.000.000" → 1025000000
+- Abaikan titik sebagai pemisah ribuan, abaikan "Rp"
+- Jika benar-benar tidak ditemukan, isi 0
 
-Jika suatu field tidak ditemukan, isi dengan string kosong "".
-Untuk imbalan_jasa_total: ambil angka yang paling besar yang disebutkan sebagai total fee, jika ada beberapa komponen jumlahkan.
+Field JSON yang dibutuhkan:
+{{
+  "nama_klien": "nama lengkap perusahaan klien (PT/CV/instansi)",
+  "nama_klien_singkat": "akronim atau kode klien 2-8 huruf, contoh: PTRO, IDXSTI, BPID",
+  "alamat_baris1": "baris pertama alamat klien (gedung/nama lokasi)",
+  "alamat_baris2": "baris kedua alamat klien (nama jalan)",
+  "kota": "nama kota (contoh: Jakarta, Jakarta Selatan)",
+  "kode_pos": "kode pos 5 digit sebagai string",
+  "up": "jabatan penerima surat (contoh: Direksi, Direktur Utama)",
+  "jenis_pekerjaan": "deskripsi singkat jenis pekerjaan tanpa nama klien (contoh: Penilaian Saham dan Pendapat Kewajaran)",
+  "nomor_proposal": "nomor proposal lengkap (contoh: 260112.001/SRR-JK/SPN-ABF/PTRO/OR)",
+  "tanggal_proposal": "tanggal proposal format DD Bulan YYYY (contoh: 12 Januari 2026)",
+  "imbalan_jasa_total": 0,
+  "receiver": "nama penandatangan dari SRR di akhir proposal (biasanya Ocky Rinaldy)"
+}}
+
+Jika field tidak ditemukan: string kosong "" untuk teks, 0 untuk angka.
 
 TEKS PROPOSAL:
 {raw_text}
@@ -286,41 +295,65 @@ def generate_kwitansi(template_bytes: bytes, project: dict, seq: int) -> bytes:
         if align:
             cell.alignment = Alignment(horizontal=align, wrap_text=True)
 
-    # ─── MAPPING ke template (berdasarkan analisis TemplateInformation)
-    # Row/col disesuaikan agar cocok dengan template KJPP SRR yang diupload user
-    # Template pakai col J (10) untuk Receipt No dan Amount, col E(5) untuk data klien
+    # ─── MAPPING ke template (verified dari TemplateInformation sheet file asli SRR)
+    #
+    # TemplateInformation Row8 "Refers To" menentukan cell yang benar:
+    #   Receipt No. → L14  |  Name1 → E12  |  Name2 → E14  |  City → E16  |  ZIP → G16
+    #   Amount01    → J20  (Imbalan Jasa — KRITIS: J27=J25*11/12, J29, J39 semua ref J25)
+    #   Amount10    → J26  (DPP PPN)
+    #   Amount14    → J29  (PPN — ada formula =ROUND(J27*0.12,0), kita override dengan nilai pasti)
+    #   Total       → J38  (hardcode) + J39 = formula =J25+J29
+    #   SayRupiah   → C41  |  Date → J41  |  Receiver → H48
 
-    # Receipt No (J12)
-    write_cell(12, 10, nomor_kwt)
+    # Bersihkan sisa data lama di template (J13 = 'xxxxxx.00x/...')
+    ws.cell(row=13, column=10).value = None
+    ws.cell(row=12, column=10).value = None  # J12 sisa generate sebelumnya
 
-    # Klien Name (E11)
-    write_cell(11, 5, project["nama_klien"])
+    # Receipt No → L14
+    write_cell(14, 12, nomor_kwt)
 
-    # Address (E13-14)
+    # Nama klien → E12 (per TemplateInformation: Name1=E12)
+    write_cell(12, 5, project["nama_klien"])
+
+    # Alamat → E13 (baris1), E14 (baris2/Name2)
     write_cell(13, 5, project["alamat_baris1"])
     write_cell(14, 5, project["alamat_baris2"])
 
-    # City (E15), ZIP (G15)
-    write_cell(15, 5, project["kota"])
-    write_cell(15, 7, project["kode_pos"])
+    # City → E16, ZIP → G16
+    write_cell(16, 5, project["kota"])
+    write_cell(16, 7, project["kode_pos"])
 
-    # Description rows (B20-22)
+    # Description rows (B20-22), TANPA baris "sebesar:" duplikat di B23
     write_cell(20, 2, f"Pembayaran jasa {project['jenis_pekerjaan']} {project['nama_klien']}")
     write_cell(21, 2, f"sesuai dengan proposal No. {project['nomor_proposal']}")
     write_cell(22, 2, f"tanggal {project['tanggal_proposal']}, sebesar:")
+    ws.cell(row=23, column=2).value = None  # hapus duplikat "sebesar:"
 
-    # Amounts
-    write_cell(24, 10, fin["imbalan_jasa"])   # Imbalan Jasa
-    write_cell(26, 10, fin["dpb_ppn"])        # DPP PPN
-    write_cell(28, 10, fin["ppn"])            # PPN 12%
-    write_cell(38, 10, fin["total"])          # Total
+    # ─── AMOUNTS ───
+    # J25 = Imbalan Jasa KRITIS — formula J27=(J25*11/12), J39=(J25+J29) semua ref J25
+    write_cell(25, 10, fin["imbalan_jasa"])   # ← J25 (bukan J24!)
 
-    # Terbilang (C40) + Tanggal (I40)
-    write_cell(40, 3, fin["terbilang"])
-    write_cell(40, 9, f"Jakarta, {tanggal_str}")
+    # J26 = DPP PPN (override formula dengan nilai eksak agar tidak mismatch)
+    write_cell(26, 10, fin["dpb_ppn"])
 
-    # Receiver (H47)
-    write_cell(47, 8, project["receiver"])
+    # J28 = PPN 12% (override formula =ROUND(J27*0.12,0) dengan nilai pasti)
+    write_cell(28, 10, fin["ppn"])
+
+    # J38 = Total (hardcode, juga ada formula J39 tapi kita isi J38)
+    write_cell(38, 10, fin["total"])
+    write_cell(39, 10, fin["total"])          # J39 juga (formula =J25+J29 mungkin tidak recalc)
+
+    # Terbilang → C41, Tanggal → J41 (per TemplateInformation: SayRupiah=C41, Date=J41)
+    write_cell(41, 3, fin["terbilang"] + ".")
+    ws.cell(row=41, column=3).value = fin["terbilang"] + "."
+    ws.cell(row=40, column=3).value = None    # hapus sisa di C40
+    ws.cell(row=41, column=9).value = "Jakarta,"
+    write_cell(41, 10, tanggal_str)           # J41 = tanggal (string, bukan datetime)
+    ws.cell(row=40, column=9).value = None    # hapus sisa di I40
+
+    # Receiver → H48 (per TemplateInformation: Receiver=H48)
+    write_cell(48, 8, project["receiver"])
+    ws.cell(row=47, column=8).value = None    # hapus sisa di H47
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -331,29 +364,38 @@ def generate_kwitansi(template_bytes: bytes, project: dict, seq: int) -> bytes:
 # ─────────────────────────────────────────
 # SURAT TAGIHAN GENERATOR (python-docx)
 # ─────────────────────────────────────────
-def replace_in_run(run, placeholder, value):
-    if placeholder in run.text:
-        run.text = run.text.replace(placeholder, str(value))
+def _normalize_para(para):
+    """Rebuild paragraph full text from all runs, return joined string."""
+    return "".join(r.text for r in para.runs)
+
+def _rewrite_para(para, new_text):
+    """
+    Write new_text into paragraph preserving formatting of first run.
+    Clears all other runs.
+    """
+    if not para.runs:
+        para.add_run(new_text)
+        return
+    para.runs[0].text = new_text
+    for r in para.runs[1:]:
+        r.text = ""
 
 def replace_in_paragraph(para, replacements):
-    """Replace placeholders in a paragraph, handling split-run cases."""
-    # First try simple per-run replacement
-    for run in para.runs:
-        for k, v in replacements.items():
-            if k in run.text:
-                run.text = run.text.replace(k, str(v))
-
-    # If placeholder is split across runs, fix full paragraph text
-    full_text = "".join(r.text for r in para.runs)
+    """
+    Replace placeholders in a paragraph.
+    Handles two cases:
+      1. {{PLACEHOLDER}} style — exact token match
+      2. Heuristic replace — teks lama diganti teks baru
+    Both handle placeholders split across multiple runs.
+    """
+    full_text = _normalize_para(para)
+    changed = False
     for k, v in replacements.items():
         if k in full_text:
             full_text = full_text.replace(k, str(v))
-            # Rewrite all text into first run, clear rest
-            if para.runs:
-                para.runs[0].text = full_text
-                for r in para.runs[1:]:
-                    r.text = ""
-            break
+            changed = True
+    if changed:
+        _rewrite_para(para, full_text)
 
 def replace_in_table(table, replacements):
     for row in table.rows:
@@ -361,8 +403,117 @@ def replace_in_table(table, replacements):
             for para in cell.paragraphs:
                 replace_in_paragraph(para, replacements)
 
+def _detect_template_mode(template_bytes: bytes) -> str:
+    """
+    Detects whether a DOCX template uses {{PLACEHOLDER}} style or is a filled document.
+    Returns 'placeholder' or 'heuristic'.
+    """
+    doc = Document(io.BytesIO(template_bytes))
+    full = " ".join(p.text for p in doc.paragraphs)
+    if "{{" in full and "}}" in full:
+        return "placeholder"
+    return "heuristic"
+
+def _build_heuristic_replacements(template_bytes: bytes, project: dict,
+                                   nomor_sk: str, tanggal_str: str, fin: dict) -> dict:
+    """
+    Smart heuristic replace untuk template DOCX SRR.
+    Mendukung:
+      a) Template x-placeholder (xxxxxx.0xx/SRR-JK/SK-OR/KODE)
+      b) Template berisi surat lama (dipakai ulang dengan ganti data)
+    """
+    import re
+    doc = Document(io.BytesIO(template_bytes))
+    full_text = " ".join(p.text for p in doc.paragraphs)
+    replacements = {}
+
+    bulan_list = ["Januari","Februari","Maret","April","Mei","Juni",
+                  "Juli","Agustus","September","Oktober","November","Desember"]
+
+    # ── 1. Nomor surat: x-placeholder (xxxxxx.0xx) atau format lama (YYMMDD.NNN)
+    x_nomor = re.search(r'x+[x\.\d]*/SRR-JK/SK-OR/\S+', full_text)
+    real_nomor = re.search(r'\d{6}\.\d{3}/SRR-JK/SK-OR/\S+', full_text)
+    if x_nomor:
+        replacements[x_nomor.group(0)] = nomor_sk
+    elif real_nomor:
+        replacements[real_nomor.group(0)] = nomor_sk
+
+    # ── 2. Tanggal surat (x-placeholder "xx Bulan YYYY" atau tanggal nyata)
+    tgl_pattern = r'\d{1,2}\s+(?:' + '|'.join(bulan_list) + r')\s+\d{4}'
+    x_tgl = re.search(r'xx\s+(?:' + '|'.join(bulan_list) + r')\s+\d{4}', full_text)
+    tanggal_lama_all = re.findall(tgl_pattern, full_text)
+    if x_tgl:
+        replacements[x_tgl.group(0)] = tanggal_str
+    elif tanggal_lama_all:
+        replacements[tanggal_lama_all[0]] = tanggal_str
+
+    # ── 3. Nama klien (baris setelah "Kepada Yth.")
+    lines_txt = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    try:
+        idx_kepada = next(i for i, l in enumerate(lines_txt) if "Kepada Yth" in l)
+        if idx_kepada + 1 < len(lines_txt):
+            nama_lama = lines_txt[idx_kepada + 1].rstrip()
+            if nama_lama and nama_lama != project["nama_klien"]:
+                replacements[nama_lama] = project["nama_klien"]
+    except StopIteration:
+        pass
+
+    # ── 4. Alamat klien (baris gedung/jalan)
+    addr_kw = ["Jl.", "Jalan", "Wisma", "Gedung", "Tower", "Lt.", "Kav", "Plaza", "Office"]
+    addr_paras = [p.text.rstrip() for p in doc.paragraphs
+                  if p.text.strip() and any(k in p.text for k in addr_kw)]
+    if len(addr_paras) >= 1 and addr_paras[0] != project["alamat_baris1"]:
+        replacements[addr_paras[0]] = project["alamat_baris1"]
+    if len(addr_paras) >= 2 and addr_paras[1] != project["alamat_baris2"]:
+        replacements[addr_paras[1]] = project["alamat_baris2"]
+
+    # ── 5. Kota + kode pos
+    kota_re = re.search(
+        r'(?:Jakarta\s*(?:Selatan|Pusat|Utara|Barat|Timur)?|Surabaya|Bandung|Tangerang\s*Selatan)\s+\d{4,5}',
+        full_text)
+    if kota_re:
+        old_kp = kota_re.group(0)
+        new_kp = f"{project['kota']} {project['kode_pos']}".strip()
+        if old_kp != new_kp:
+            replacements[old_kp] = new_kp
+
+    # ── 6. Nomor proposal
+    prop_re = re.search(r'\d{6}[\d\.]+/SRR-JK/SPN[-\w]*/\S+', full_text)
+    if prop_re:
+        old_prop = prop_re.group(0)
+        if old_prop != project["nomor_proposal"]:
+            replacements[old_prop] = project["nomor_proposal"]
+
+    # ── 7. Tanggal proposal (tanggal ke-2, termasuk non-breaking space)
+    tgl_nbsp = re.search(r'\d{1,2}\xa0(?:' + '|'.join(bulan_list) + r')\s+\d{4}', full_text)
+    if tgl_nbsp and tgl_nbsp.group(0) != project["tanggal_proposal"]:
+        replacements[tgl_nbsp.group(0)] = project["tanggal_proposal"]
+    elif len(tanggal_lama_all) >= 2 and tanggal_lama_all[1] != project["tanggal_proposal"]:
+        replacements[tanggal_lama_all[1]] = project["tanggal_proposal"]
+
+    # ── 8. Terbilang (diapit kurung)
+    terb_re = re.search(r'\(\s+([A-Z][a-zA-Z\s]+Rupiah)\s+\)', full_text)
+    if terb_re:
+        replacements[terb_re.group(1)] = fin["terbilang"]
+
+    # ── 9. Jenis pekerjaan di baris "Hal"
+    for p in doc.paragraphs:
+        t = p.text.strip()
+        if "Hal" in t and "Penagihan" in t:
+            hal_m = re.search(r'Penagihan Pembayaran (.+)', t)
+            if hal_m:
+                old_hal = hal_m.group(1).strip()
+                new_hal = f"Pembayaran Jasa {project['jenis_pekerjaan']} {project['nama_klien_singkat']}"
+                replacements[old_hal] = new_hal
+                break
+
+    return replacements
+
+
 def generate_surat(template_bytes: bytes, project: dict, seq: int) -> bytes:
-    """Inject project data into surat tagihan DOCX template."""
+    """Inject project data into surat tagihan DOCX template.
+    Supports both {{PLACEHOLDER}} template style and heuristic replace for filled templates.
+    """
     doc = Document(io.BytesIO(template_bytes))
 
     tanggal = project["tanggal_tagihan_date"]
@@ -371,22 +522,37 @@ def generate_surat(template_bytes: bytes, project: dict, seq: int) -> bytes:
     tanggal_str = format_tanggal_indo(tanggal)
     total_fmt = f"Rp {fin['total']:,.0f}".replace(",", ".")
 
-    replacements = {
-        "{{NOMOR_SURAT}}":    nomor_sk,
-        "{{TANGGAL_SURAT}}":  tanggal_str,
-        "{{NAMA_KLIEN}}":     project["nama_klien"],
-        "{{ALAMAT1}}":        project["alamat_baris1"],
-        "{{ALAMAT2}}":        project["alamat_baris2"],
-        "{{KOTA_POS}}":       f"{project['kota']} {project['kode_pos']}".strip(),
-        "{{UP}}":             project["up"],
-        "{{JENIS_PEKERJAAN}}":project["jenis_pekerjaan"],
-        "{{NOMOR_PROPOSAL}}": project["nomor_proposal"],
-        "{{TGL_PROPOSAL}}":   project["tanggal_proposal"],
-        "{{TERBILANG}}":      fin["terbilang"],
-        "{{TOTAL_ANGKA}}":    total_fmt,
-        "{{RECEIVER}}":       project["receiver"],
-        "{{NAMA_KLIEN_SINGKAT}}": project["nama_klien_singkat"],
-    }
+    # Detect mode
+    mode = _detect_template_mode(template_bytes)
+
+    if mode == "placeholder":
+        # Mode 1: Template dengan {{PLACEHOLDER}} — exact replace
+        replacements = {
+            "{{NOMOR_SURAT}}":        nomor_sk,
+            "{{TANGGAL_SURAT}}":      tanggal_str,
+            "{{NAMA_KLIEN}}":         project["nama_klien"],
+            "{{ALAMAT1}}":            project["alamat_baris1"],
+            "{{ALAMAT2}}":            project["alamat_baris2"],
+            "{{KOTA_POS}}":           f"{project['kota']} {project['kode_pos']}".strip(),
+            "{{UP}}":                 project["up"],
+            "{{JENIS_PEKERJAAN}}":    project["jenis_pekerjaan"],
+            "{{NOMOR_PROPOSAL}}":     project["nomor_proposal"],
+            "{{TGL_PROPOSAL}}":       project["tanggal_proposal"],
+            "{{TERBILANG}}":          fin["terbilang"],
+            "{{TOTAL_ANGKA}}":        total_fmt,
+            "{{RECEIVER}}":           project["receiver"],
+            "{{NAMA_KLIEN_SINGKAT}}": project["nama_klien_singkat"],
+        }
+    else:
+        # Mode 2: Template adalah surat yang sudah terisi — heuristic replace
+        replacements = _build_heuristic_replacements(
+            template_bytes, project, nomor_sk, tanggal_str, fin
+        )
+        # Tambahkan replace langsung untuk data yang paling kritis
+        replacements.update({
+            project.get("_template_nama_klien", "__NO_MATCH__"):  project["nama_klien"],
+            project.get("_template_nomor_prop", "__NO_MATCH__"):  project["nomor_proposal"],
+        })
 
     for para in doc.paragraphs:
         replace_in_paragraph(para, replacements)
@@ -640,7 +806,16 @@ with st.sidebar:
                                   help="Upload template surat tagihan .docx dengan placeholder {{NAMA_KLIEN}} dll")
     if sk_upload:
         st.session_state.sk_template = sk_upload.read()
-        st.success("✅ Template surat tersimpan")
+        # Detect template mode and inform user
+        mode = _detect_template_mode(st.session_state.sk_template)
+        if mode == "placeholder":
+            st.success("✅ Template surat tersimpan — mode **{{Placeholder}}** terdeteksi")
+        else:
+            st.warning(
+                "⚠️ Template surat tersimpan — **mode Heuristic** (teks lama diganti otomatis). "
+                "Untuk hasil terbaik, edit template di Word dan tambahkan "
+                "`{{NAMA_KLIEN}}`, `{{NOMOR_SURAT}}`, dll. sebagai placeholder."
+            )
 
     if not st.session_state.kwt_template:
         st.info("ℹ️ Belum ada template kwitansi — akan gunakan template default SRR")
