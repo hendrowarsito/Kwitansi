@@ -754,6 +754,353 @@ def build_default_kwitansi_template() -> bytes:
     return buf.read()
 
 
+
+# ─────────────────────────────────────────
+# PREVIEW RENDERERS
+# ─────────────────────────────────────────
+
+def _fmt_rp(n: int) -> str:
+    """Format angka sebagai Rp X.XXX.XXX"""
+    return "Rp {:,.0f}".format(n).replace(",", ".")
+
+
+def render_preview_surat(p: dict, seq: int) -> str:
+    """
+    Render surat tagihan sebagai HTML preview yang akurat.
+    Menggunakan data live dari form (bukan template file).
+    """
+    tanggal = p.get("tanggal_tagihan_date", date.today())
+    fin = hitung_tagihan(p["imbalan_jasa_total"])
+    nomor_sk = generate_nomor(tanggal, seq, "SK-OR", p.get("nama_klien_singkat", "XXX"))
+    tgl_str  = format_tanggal_indo(tanggal)
+    total_fmt = _fmt_rp(fin["total"])
+
+    # Baris alamat — hanya tampilkan baris yang ada isinya
+    alamat_lines = []
+    if p.get("alamat_baris1"): alamat_lines.append(p["alamat_baris1"])
+    if p.get("alamat_baris2"): alamat_lines.append(p["alamat_baris2"])
+    kota_pos = f"{p.get('kota','')} {p.get('kode_pos','')}".strip()
+    if kota_pos: alamat_lines.append(kota_pos)
+    alamat_html = "<br>".join(f"<strong>{a}</strong>" for a in alamat_lines)
+
+    return f"""
+<div style="
+    font-family: 'Times New Roman', serif;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: #1a1a1a;
+    background: white;
+    border: 1px solid #dde3ed;
+    border-radius: 8px;
+    padding: 24px 28px;
+    max-height: 680px;
+    overflow-y: auto;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+">
+  <!-- KOP SURAT -->
+  <div style="border-bottom: 2px solid #0f3460; padding-bottom: 10px; margin-bottom: 16px; display:flex; justify-content:space-between; align-items:flex-start;">
+    <div>
+      <div style="font-weight:800; font-size:13px; color:#0f3460; letter-spacing:0.3px;">SUWENDHO RINALDY DAN REKAN</div>
+      <div style="font-size:9.5px; color:#555;">KANTOR JASA PENILAI PUBLIK</div>
+      <div style="font-size:8.5px; color:#777;">No. Izin: 2.09.0059 | Cabang: 1138/KM.1/2017</div>
+    </div>
+    <div style="text-align:right; font-size:8.5px; color:#666; line-height:1.5;">
+      Komplek Kalibata Indah Blok K16-17<br>
+      Jl. Rawajati Timur, Pancoran<br>
+      Jakarta Selatan 12750
+    </div>
+  </div>
+
+  <!-- NOMOR & TANGGAL -->
+  <table style="width:100%; margin-bottom:14px; font-size:11.5px;">
+    <tr>
+      <td style="width:60px; vertical-align:top; padding-right:4px;">No.</td>
+      <td style="width:10px; vertical-align:top;">:</td>
+      <td style="font-weight:600; color:#0f3460;">
+        {nomor_sk if nomor_sk else '<span style="color:#aaa;">belum terisi</span>'}
+      </td>
+      <td style="text-align:right; color:#555;">{tgl_str}</td>
+    </tr>
+  </table>
+
+  <!-- KEPADA -->
+  <div style="margin-bottom:14px; font-size:11.5px;">
+    <div>Kepada Yth.</div>
+    <br>
+    {alamat_html if alamat_lines else '<span style="color:#aaa; font-style:italic;">Alamat belum diisi</span>'}
+    <br>
+    <table style="margin-top:8px;">
+      <tr>
+        <td style="width:36px;">U.p.</td>
+        <td style="width:10px;">:</td>
+        <td><strong>{p.get("up","") or '<span style="color:#aaa;">—</span>'}</strong></td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- HAL -->
+  <table style="margin-bottom:16px; font-size:11.5px;">
+    <tr>
+      <td style="width:36px; vertical-align:top;">Hal</td>
+      <td style="width:10px; vertical-align:top;">:</td>
+      <td><strong>Penagihan Pembayaran Jasa {p.get("jenis_pekerjaan","") or "—"}
+        {p.get("nama_klien_singkat","")}</strong></td>
+    </tr>
+  </table>
+
+  <div style="margin-bottom:12px;">Dengan hormat,</div>
+
+  <!-- BODY -->
+  <div style="margin-bottom:16px; text-align:justify;">
+    Menunjuk surat penawaran kami No.
+    <strong>{p.get("nomor_proposal","") or '<span style="color:#aaa;">belum diisi</span>'}</strong>
+    tanggal {p.get("tanggal_proposal","") or '<span style="color:#aaa;">—</span>'},
+    maka dengan ini kami mohon agar pembayaran untuk penugasan tersebut sebesar:
+  </div>
+
+  <!-- NOMINAL -->
+  <div style="
+    text-align:center;
+    font-size:15px;
+    font-weight:700;
+    color:#0f3460;
+    padding: 10px 0 4px;
+    letter-spacing:0.3px;
+  ">{total_fmt if fin["total"] > 0 else '<span style="color:#aaa;">Rp —</span>'}</div>
+  <div style="text-align:center; font-size:11px; color:#555; margin-bottom:14px;">
+    ({fin["terbilang"] if fin["total"] > 0 else "—"})
+  </div>
+
+  <!-- RINCIAN MINI -->
+  <table style="width:100%; font-size:10.5px; color:#555; margin-bottom:14px; border-top:1px solid #eee; padding-top:8px;">
+    <tr>
+      <td>Imbalan Jasa</td>
+      <td style="text-align:right;">{_fmt_rp(fin["imbalan_jasa"])}</td>
+    </tr>
+    <tr>
+      <td>DPP (× 11/12)</td>
+      <td style="text-align:right;">{_fmt_rp(fin["dpb_ppn"])}</td>
+    </tr>
+    <tr>
+      <td>PPN 12%</td>
+      <td style="text-align:right;">{_fmt_rp(fin["ppn"])}</td>
+    </tr>
+    <tr style="font-weight:700; border-top:1px solid #ccc;">
+      <td style="padding-top:4px;">Total</td>
+      <td style="text-align:right; padding-top:4px; color:#0f3460;">{_fmt_rp(fin["total"])}</td>
+    </tr>
+  </table>
+
+  <!-- FOOTER TEXT -->
+  <div style="font-size:10.5px; color:#444; margin-bottom:20px; text-align:justify;">
+    (kwitansi dan faktur PPN terlampir) dapat dibayarkan kepada kami dengan bilyet giro atau
+    ditransfer ke rekening kami atas nama <strong>KJPP SUWENDHO RINALDY &amp; REKAN</strong>
+    di Bank Mandiri KCP JKT Kalibata Rawajati No. Rek. <strong>126-0005748719</strong>
+    pada kesempatan pertama.
+  </div>
+
+  <!-- TANDA TANGAN -->
+  <div style="display:flex; justify-content:flex-end; font-size:11px; margin-top:8px;">
+    <div style="text-align:center; width:160px;">
+      <div>Hormat kami,</div>
+      <div style="margin: 36px 0 4px; border-bottom:1px solid #333; width:120px; margin-left:auto; margin-right:auto;"></div>
+      <div style="font-weight:700;">{p.get("receiver","Ocky Rinaldy")}</div>
+      <div style="color:#666;">Rekan</div>
+    </div>
+  </div>
+</div>
+"""
+
+
+def render_preview_kwitansi(p: dict, seq: int) -> str:
+    """
+    Render kwitansi sebagai HTML preview.
+    """
+    tanggal = p.get("tanggal_tagihan_date", date.today())
+    fin = hitung_tagihan(p["imbalan_jasa_total"])
+    nomor_kwt = generate_nomor(tanggal, seq, "KWT.PJK", p.get("nama_klien_singkat","XXX"))
+    tgl_str   = format_tanggal_indo(tanggal)
+
+    def row(label, val, bold_val=False):
+        val_style = "font-weight:700;" if bold_val else ""
+        color = "#0f3460" if bold_val else "#1a1a1a"
+        return f"""
+        <tr>
+          <td style="padding:4px 8px 4px 0; color:#555; font-size:10px; white-space:nowrap;">{label}</td>
+          <td style="padding:4px 0; text-align:right; font-size:10.5px; {val_style} color:{color};">{val}</td>
+        </tr>"""
+
+    return f"""
+<div style="
+    font-family: Arial, sans-serif;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #1a1a1a;
+    background: white;
+    border: 1px solid #dde3ed;
+    border-radius: 8px;
+    padding: 20px 24px;
+    max-height: 680px;
+    overflow-y: auto;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+">
+  <!-- KOP -->
+  <div style="border-bottom:2px solid #0f3460; padding-bottom:8px; margin-bottom:12px; text-align:center;">
+    <div style="font-weight:800; font-size:12px; color:#0f3460;">SUWENDHO RINALDY DAN REKAN</div>
+    <div style="font-size:8.5px; color:#555;">KANTOR JASA PENILAI PUBLIK</div>
+  </div>
+
+  <!-- TITLE + RECEIPT NO -->
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+    <div style="font-size:18px; font-weight:800; color:#0f3460; letter-spacing:1px;">KWITANSI</div>
+    <div style="text-align:right;">
+      <div style="font-size:9px; color:#888;">Receipt No.</div>
+      <div style="font-size:10px; font-weight:700; font-family:monospace; color:#0f3460;">
+        {nomor_kwt}</div>
+    </div>
+  </div>
+
+  <!-- DATA KLIEN -->
+  <div style="background:#f8faff; border-radius:6px; padding:10px 12px; margin-bottom:14px; font-size:11px;">
+    <div style="font-weight:700; font-size:11.5px; color:#0f3460; margin-bottom:2px;">
+      {p.get("nama_klien","") or '<span style="color:#aaa; font-style:italic;">Nama klien belum diisi</span>'}
+    </div>
+    <div style="color:#555;">
+      {p.get("alamat_baris1","")}{("<br>" + p.get("alamat_baris2","")) if p.get("alamat_baris2") else ""}
+    </div>
+    <div style="color:#666; font-size:10px;">
+      {p.get("kota","")} {p.get("kode_pos","")}
+    </div>
+  </div>
+
+  <!-- KETERANGAN -->
+  <div style="font-size:10.5px; color:#444; margin-bottom:6px; border-left:3px solid #0f3460; padding-left:8px;">
+    Pembayaran jasa <strong>{p.get("jenis_pekerjaan","—")}</strong>
+    <span style="color:#777;"> · {p.get("nama_klien","")}</span><br>
+    <span style="color:#888;">No. {p.get("nomor_proposal","—")} &nbsp;|&nbsp; {p.get("tanggal_proposal","—")}</span>
+  </div>
+
+  <!-- RINCIAN BIAYA -->
+  <table style="width:100%; border-collapse:collapse; margin:12px 0 4px;">
+    <thead>
+      <tr style="background:#f1f5fe;">
+        <th style="text-align:left; padding:5px 8px 5px 0; font-size:9.5px; color:#666; font-weight:600;">URAIAN</th>
+        <th style="text-align:right; padding:5px 0; font-size:9.5px; color:#666; font-weight:600;">JUMLAH (Rp)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {row("Imbalan Jasa", _fmt_rp(fin["imbalan_jasa"]))}
+      {row("Dasar Pengenaan PPN (× 11/12)", _fmt_rp(fin["dpb_ppn"]))}
+      {row("PPN 12%", _fmt_rp(fin["ppn"]))}
+    </tbody>
+    <tfoot>
+      <tr style="border-top:2px solid #0f3460;">
+        <td style="padding:6px 8px 2px 0; font-weight:700; font-size:11px;">TOTAL</td>
+        <td style="text-align:right; font-weight:800; font-size:13px; color:#0f3460; padding-top:6px;">
+          {_fmt_rp(fin["total"]) if fin["total"] > 0 else "—"}
+        </td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <!-- TERBILANG -->
+  <div style="
+    background:#fffbeb;
+    border:1px dashed #d4a017;
+    border-radius:5px;
+    padding:8px 12px;
+    font-size:10.5px;
+    color:#6b4c00;
+    margin:10px 0 14px;
+    font-style:italic;
+  ">
+    ( {fin["terbilang"] if fin["total"] > 0 else "—"} )
+  </div>
+
+  <!-- FOOTER -->
+  <div style="display:flex; justify-content:space-between; align-items:flex-end; font-size:10px; color:#666; margin-top:8px;">
+    <div style="font-size:9px; color:#888; max-width:60%;">
+      Pembayaran melalui Bank Mandiri KCP JKT Kalibata Rawajati<br>
+      a.n. KJPP Suwendho Rinaldy &amp; Rekan · No. Rek. 126-0005748719
+    </div>
+    <div style="text-align:center; min-width:120px;">
+      <div>Jakarta, {tgl_str}</div>
+      <div style="margin:28px 0 4px; border-bottom:1px solid #555; width:100px; margin-left:auto; margin-right:auto;"></div>
+      <div style="font-weight:700;">{p.get("receiver","Ocky Rinaldy")}</div>
+      <div style="color:#888;">Rekan</div>
+    </div>
+  </div>
+</div>
+"""
+
+
+def render_proposal_text(p: dict) -> str:
+    """
+    Tampilkan teks mentah proposal yang tersimpan.
+    Highlight field-field yang berhasil diekstrak.
+    """
+    proposal_bytes = p.get("_proposal_bytes")
+    proposal_name  = p.get("_proposal_name", "")
+    if not proposal_bytes:
+        return None
+
+    # Ekstrak teks
+    try:
+        if proposal_name.lower().endswith(".pdf"):
+            with pdfplumber.open(io.BytesIO(proposal_bytes)) as pdf:
+                pages = []
+                for pg in pdf.pages:
+                    t = pg.extract_text()
+                    if t:
+                        pages.append(t)
+            raw = "\n".join(pages)
+        else:
+            doc = Document(io.BytesIO(proposal_bytes))
+            raw = "\n".join(para.text for para in doc.paragraphs if para.text.strip())
+    except Exception:
+        return None
+
+    if not raw:
+        return None
+
+    # Highlight nilai-nilai yang diekstrak dalam teks proposal
+    import html as html_mod
+    safe = html_mod.escape(raw[:5000])  # batasi agar tidak terlalu panjang
+
+    # Highlight setiap nilai yang cocok (case-insensitive)
+    highlights = [
+        p.get("nama_klien",""), p.get("nomor_proposal",""),
+        p.get("tanggal_proposal",""), p.get("nama_klien_singkat",""),
+        p.get("alamat_baris1",""), p.get("up",""),
+    ]
+    for val in highlights:
+        if val and len(val) > 3:
+            safe_val = html_mod.escape(val)
+            safe = safe.replace(safe_val,
+                f'<mark style="background:#fef08a; border-radius:3px; padding:0 2px;">{safe_val}</mark>')
+
+    return f"""
+<div style="
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 10px;
+    line-height: 1.7;
+    color: #374151;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 16px;
+    max-height: 680px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+">
+<div style="font-family:sans-serif; font-size:10px; color:#9ca3af; margin-bottom:10px; padding-bottom:6px; border-bottom:1px solid #e5e7eb;">
+  📄 {html_mod.escape(proposal_name)} · {len(raw):,} karakter · (5.000 karakter pertama)
+</div>{safe}{"..." if len(raw) > 5000 else ""}
+</div>
+"""
+
+
 # ─────────────────────────────────────────
 # SESSION STATE INIT
 # ─────────────────────────────────────────
@@ -874,10 +1221,13 @@ with tab1:
                 for i, f in enumerate(uploaded_proposals):
                     with st.spinner(f"Membaca {f.name}..."):
                         try:
-                            data = extract_proposal_data(f.read(), f.name)
+                            file_bytes = f.read()
+                            data = extract_proposal_data(file_bytes, f.name)
                             data["receiver"] = receiver
                             data["_source_file"] = f.name
-                            # Parse tanggal tagihan
+                            # Simpan bytes proposal untuk preview
+                            data["_proposal_bytes"] = file_bytes
+                            data["_proposal_name"] = f.name
                             data["tanggal_tagihan_date"] = date.today()
                             st.session_state.projects.append(data)
                         except Exception as e:
@@ -962,7 +1312,7 @@ with tab2:
     if not st.session_state.projects:
         st.info("Belum ada proyek. Tambahkan di tab **Input Proyek** terlebih dahulu.")
     else:
-        # Summary table
+        # ── Summary table
         summary_rows = []
         for i, p in enumerate(st.session_state.projects):
             fin = hitung_tagihan(p["imbalan_jasa_total"])
@@ -970,7 +1320,7 @@ with tab2:
                 "#": i + 1,
                 "Klien": p["nama_klien"],
                 "Kode": p["nama_klien_singkat"],
-                "Pekerjaan": p["jenis_pekerjaan"][:40] + "..." if len(p["jenis_pekerjaan"]) > 40 else p["jenis_pekerjaan"],
+                "Pekerjaan": p["jenis_pekerjaan"][:45] + "…" if len(p["jenis_pekerjaan"]) > 45 else p["jenis_pekerjaan"],
                 "Imbalan Jasa": f"Rp {p['imbalan_jasa_total']:,.0f}",
                 "Total + PPN": f"Rp {fin['total']:,.0f}",
                 "Sumber": p.get("_source_file", "-"),
@@ -980,8 +1330,8 @@ with tab2:
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
         st.divider()
-        st.markdown("### ✏️ Edit Detail Proyek")
 
+        # ── Pilih proyek
         edit_idx = st.selectbox(
             "Pilih proyek untuk diedit:",
             options=list(range(len(st.session_state.projects))),
@@ -989,64 +1339,196 @@ with tab2:
         )
 
         p = st.session_state.projects[edit_idx]
+        seq_preview = st.session_state.seq_counter + edit_idx
 
-        with st.form(f"edit_form_{edit_idx}"):
-            st.markdown(f"#### Edit: {p['nama_klien']}")
-            c1, c2 = st.columns(2)
-            with c1:
+        # ── LAYOUT UTAMA: Form (kiri) | Preview tabs (kanan)
+        col_form, col_prev = st.columns([5, 6], gap="large")
+
+        # ───────────────────────────────
+        # KOLOM KIRI — Edit Form
+        # ───────────────────────────────
+        with col_form:
+            st.markdown("### ✏️ Edit Detail")
+
+            with st.form(f"edit_form_{edit_idx}"):
+                st.markdown("**Data Klien**")
                 e_nama    = st.text_input("Nama Klien", value=p["nama_klien"])
-                e_singkat = st.text_input("Kode Klien", value=p["nama_klien_singkat"])
-                e_alamat1 = st.text_input("Alamat 1", value=p["alamat_baris1"])
-                e_alamat2 = st.text_input("Alamat 2", value=p["alamat_baris2"])
-                e_kota    = st.text_input("Kota", value=p["kota"])
-                e_kodepos = st.text_input("Kode Pos", value=str(p["kode_pos"]))
-            with c2:
-                e_up        = st.text_input("U.p.", value=p["up"])
+                e_singkat = st.text_input("Kode Klien", value=p["nama_klien_singkat"],
+                                          help="2-8 huruf, contoh: PTRO, IDXSTI")
+                e_alamat1 = st.text_input("Alamat 1 (Gedung/Wisma)", value=p["alamat_baris1"])
+                e_alamat2 = st.text_input("Alamat 2 (Jalan)", value=p["alamat_baris2"])
+
+                ca, cb = st.columns(2)
+                with ca:
+                    e_kota    = st.text_input("Kota", value=p["kota"])
+                with cb:
+                    e_kodepos = st.text_input("Kode Pos", value=str(p["kode_pos"]))
+
+                e_up = st.text_input("U.p. (Jabatan penerima)", value=p["up"])
+
+                st.markdown("**Detail Penugasan**")
                 e_pekerjaan = st.text_input("Jenis Pekerjaan", value=p["jenis_pekerjaan"])
                 e_noprop    = st.text_input("Nomor Proposal", value=p["nomor_proposal"])
-                e_tglprop   = st.text_input("Tanggal Proposal", value=p["tanggal_proposal"])
-                e_fee       = st.number_input("Imbalan Jasa (Rp)",
-                                               value=int(p["imbalan_jasa_total"]),
-                                               min_value=0, step=1000000)
-                e_tgltagih  = st.date_input("Tanggal Tagihan",
-                                             value=p.get("tanggal_tagihan_date", date.today()))
-                e_receiver  = st.text_input("Penandatangan", value=p["receiver"])
+                e_tglprop   = st.text_input("Tanggal Proposal", value=p["tanggal_proposal"],
+                                            help="Contoh: 12 Januari 2026")
 
-            # Preview
-            if e_fee > 0:
-                fin_e = hitung_tagihan(e_fee)
-                st.info(
-                    f"**Preview Tagihan:** Imbalan Jasa = Rp {fin_e['imbalan_jasa']:,.0f} | "
-                    f"DPP = Rp {fin_e['dpb_ppn']:,.0f} | PPN = Rp {fin_e['ppn']:,.0f} | "
-                    f"**Total = Rp {fin_e['total']:,.0f}**\n\n"
-                    f"*{fin_e['terbilang']}*"
-                )
+                st.markdown("**Tagihan**")
+                e_fee = st.number_input("Imbalan Jasa (Rp, sebelum PPN)",
+                                        value=int(p["imbalan_jasa_total"]),
+                                        min_value=0, step=1_000_000,
+                                        help="Total fee sebelum PPN. DPP & PPN dihitung otomatis.")
+                e_tgltagih = st.date_input("Tanggal Tagihan",
+                                           value=p.get("tanggal_tagihan_date", date.today()))
+                e_receiver = st.text_input("Penandatangan", value=p["receiver"])
 
-            c_save, c_del = st.columns([3, 1])
-            with c_save:
-                if st.form_submit_button("💾 Simpan Perubahan", type="primary"):
+                # Preview angka live
+                if e_fee > 0:
+                    fin_e = hitung_tagihan(e_fee)
+                    st.info(
+                        f"DPP = {_fmt_rp(fin_e['dpb_ppn'])} · "
+                        f"PPN = {_fmt_rp(fin_e['ppn'])} · "
+                        f"**Total = {_fmt_rp(fin_e['total'])}**"
+                    )
+
+                cs, cd = st.columns([3, 1])
+                with cs:
+                    saved = st.form_submit_button("💾 Simpan Perubahan", type="primary",
+                                                   use_container_width=True)
+                with cd:
+                    deleted = st.form_submit_button("🗑️ Hapus", use_container_width=True)
+
+                if saved:
                     st.session_state.projects[edit_idx].update({
-                        "nama_klien": e_nama,
-                        "nama_klien_singkat": e_singkat,
-                        "alamat_baris1": e_alamat1,
-                        "alamat_baris2": e_alamat2,
-                        "kota": e_kota,
-                        "kode_pos": e_kodepos,
-                        "up": e_up,
-                        "jenis_pekerjaan": e_pekerjaan,
-                        "nomor_proposal": e_noprop,
-                        "tanggal_proposal": e_tglprop,
-                        "imbalan_jasa_total": int(e_fee),
-                        "tanggal_tagihan_date": e_tgltagih,
-                        "receiver": e_receiver,
+                        "nama_klien":          e_nama,
+                        "nama_klien_singkat":  e_singkat,
+                        "alamat_baris1":       e_alamat1,
+                        "alamat_baris2":       e_alamat2,
+                        "kota":                e_kota,
+                        "kode_pos":            e_kodepos,
+                        "up":                  e_up,
+                        "jenis_pekerjaan":     e_pekerjaan,
+                        "nomor_proposal":      e_noprop,
+                        "tanggal_proposal":    e_tglprop,
+                        "imbalan_jasa_total":  int(e_fee),
+                        "tanggal_tagihan_date":e_tgltagih,
+                        "receiver":            e_receiver,
                     })
                     st.success("✅ Data diperbarui!")
                     st.rerun()
-            with c_del:
-                if st.form_submit_button("🗑️ Hapus Proyek"):
+
+                if deleted:
                     st.session_state.projects.pop(edit_idx)
                     st.success("Proyek dihapus.")
                     st.rerun()
+
+        # ───────────────────────────────
+        # KOLOM KANAN — Preview Panel
+        # ───────────────────────────────
+        with col_prev:
+            st.markdown("### 👁️ Preview Dokumen")
+
+            # Build preview project dari nilai form SAAT INI (sebelum disimpan)
+            # Gunakan data tersimpan (p) karena form belum di-submit
+            p_preview = dict(p)
+
+            has_proposal = bool(p.get("_proposal_bytes"))
+
+            if has_proposal:
+                prev_tab_surat, prev_tab_kwt, prev_tab_proposal = st.tabs([
+                    "📝 Surat Tagihan", "📊 Kwitansi", "📄 Teks Proposal"
+                ])
+            else:
+                prev_tab_surat, prev_tab_kwt = st.tabs([
+                    "📝 Surat Tagihan", "📊 Kwitansi"
+                ])
+
+            with prev_tab_surat:
+                if p_preview["imbalan_jasa_total"] == 0:
+                    st.warning("⚠️ Imbalan Jasa belum diisi — preview nominal kosong.")
+                surat_html = render_preview_surat(p_preview, seq_preview)
+                st.markdown(surat_html, unsafe_allow_html=True)
+
+                # Checklist validasi surat
+                st.markdown("---")
+                st.markdown("**Checklist Validasi**")
+                checks_surat = {
+                    "Nama klien":       bool(p_preview.get("nama_klien")),
+                    "Alamat":           bool(p_preview.get("alamat_baris1")),
+                    "Nomor proposal":   bool(p_preview.get("nomor_proposal")),
+                    "Tanggal proposal": bool(p_preview.get("tanggal_proposal")),
+                    "Jenis pekerjaan":  bool(p_preview.get("jenis_pekerjaan")),
+                    "Imbalan jasa > 0": p_preview.get("imbalan_jasa_total", 0) > 0,
+                    "Kode klien":       bool(p_preview.get("nama_klien_singkat")),
+                }
+                cols_check = st.columns(2)
+                for ci, (label, ok) in enumerate(checks_surat.items()):
+                    with cols_check[ci % 2]:
+                        icon = "✅" if ok else "❌"
+                        color = "#166534" if ok else "#991b1b"
+                        st.markdown(
+                            f'<span style="font-size:12px; color:{color};">{icon} {label}</span>',
+                            unsafe_allow_html=True
+                        )
+
+            with prev_tab_kwt:
+                if p_preview["imbalan_jasa_total"] == 0:
+                    st.warning("⚠️ Imbalan Jasa belum diisi — preview nominal kosong.")
+                kwt_html = render_preview_kwitansi(p_preview, seq_preview)
+                st.markdown(kwt_html, unsafe_allow_html=True)
+
+                # Checklist validasi kwitansi
+                st.markdown("---")
+                st.markdown("**Checklist Validasi**")
+                checks_kwt = {
+                    "Nama klien":     bool(p_preview.get("nama_klien")),
+                    "Kode klien":     bool(p_preview.get("nama_klien_singkat")),
+                    "Alamat":         bool(p_preview.get("alamat_baris1")),
+                    "Kota":           bool(p_preview.get("kota")),
+                    "Kode pos":       bool(p_preview.get("kode_pos")),
+                    "Fee > 0":        p_preview.get("imbalan_jasa_total", 0) > 0,
+                    "No. proposal":   bool(p_preview.get("nomor_proposal")),
+                    "Tgl. proposal":  bool(p_preview.get("tanggal_proposal")),
+                }
+                cols_ck2 = st.columns(2)
+                for ci, (label, ok) in enumerate(checks_kwt.items()):
+                    with cols_ck2[ci % 2]:
+                        icon = "✅" if ok else "❌"
+                        color = "#166534" if ok else "#991b1b"
+                        st.markdown(
+                            f'<span style="font-size:12px; color:{color};">{icon} {label}</span>',
+                            unsafe_allow_html=True
+                        )
+
+            if has_proposal:
+                with prev_tab_proposal:
+                    st.caption(
+                        "Teks asli proposal yang diupload. "
+                        "**Kuning** = nilai yang berhasil diekstrak AI. "
+                        "Jika ada data yang tidak cocok, edit di panel kiri lalu Simpan."
+                    )
+                    proposal_html = render_proposal_text(p_preview)
+                    if proposal_html:
+                        st.markdown(proposal_html, unsafe_allow_html=True)
+                    else:
+                        st.info("Tidak bisa membaca teks proposal.")
+
+                    # Tabel perbandingan: Ekstraksi AI vs Data saat ini
+                    st.markdown("---")
+                    st.markdown("**Perbandingan: Hasil Ekstraksi AI vs Data Tersimpan**")
+                    compare_fields = [
+                        ("Nama Klien",       p_preview.get("nama_klien","")),
+                        ("Kode Klien",       p_preview.get("nama_klien_singkat","")),
+                        ("Alamat 1",         p_preview.get("alamat_baris1","")),
+                        ("Alamat 2",         p_preview.get("alamat_baris2","")),
+                        ("Kota",             p_preview.get("kota","")),
+                        ("Kode Pos",         str(p_preview.get("kode_pos",""))),
+                        ("Nomor Proposal",   p_preview.get("nomor_proposal","")),
+                        ("Tanggal Proposal", p_preview.get("tanggal_proposal","")),
+                        ("Imbalan Jasa",     _fmt_rp(p_preview.get("imbalan_jasa_total",0))),
+                        ("Jenis Pekerjaan",  p_preview.get("jenis_pekerjaan","")),
+                    ]
+                    df_compare = pd.DataFrame(compare_fields, columns=["Field", "Nilai Tersimpan"])
+                    st.dataframe(df_compare, use_container_width=True, hide_index=True)
 
 
 # ════════════════════════════════════════
