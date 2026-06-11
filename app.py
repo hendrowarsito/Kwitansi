@@ -13,10 +13,6 @@ import re
 from datetime import datetime, date
 from copy import deepcopy
 
-# ── openpyxl (template xlsx)
-from openpyxl import load_workbook
-from openpyxl.styles import Font, Alignment
-
 # ── python-docx (template docx)
 from docx import Document
 from docx.shared import Pt
@@ -278,96 +274,7 @@ JSON:"""
 
 
 # ─────────────────────────────────────────
-# KWITANSI GENERATOR (openpyxl)
-# ─────────────────────────────────────────
-def generate_kwitansi(template_bytes: bytes, project: dict, seq: int) -> bytes:
-    """Inject project data into kwitansi XLSX template."""
-    wb = load_workbook(io.BytesIO(template_bytes))
-    ws = wb.active
-
-    tanggal = project["tanggal_tagihan_date"]
-    fin = hitung_tagihan(project["imbalan_jasa_total"])
-    nomor_kwt = generate_nomor(tanggal, seq, "KWT.PJK", project["nama_klien_singkat"])
-    tanggal_str = format_tanggal_indo(tanggal)
-
-    # ── Helper: find & write cell safely (preserve existing formatting)
-    def write_cell(row, col, value, bold=False, align=None):
-        cell = ws.cell(row=row, column=col)
-        cell.value = value
-        if bold:
-            cell.font = Font(bold=True, name=cell.font.name if cell.font else "Arial",
-                             size=cell.font.size if cell.font else 10)
-        if align:
-            cell.alignment = Alignment(horizontal=align, wrap_text=True)
-
-    # ─── MAPPING ke template (verified dari TemplateInformation sheet file asli SRR)
-    #
-    # TemplateInformation Row8 "Refers To" menentukan cell yang benar:
-    #   Receipt No. → L14  |  Name1 → E12  |  Name2 → E14  |  City → E16  |  ZIP → G16
-    #   Amount01    → J20  (Imbalan Jasa — KRITIS: J27=J25*11/12, J29, J39 semua ref J25)
-    #   Amount10    → J26  (DPP PPN)
-    #   Amount14    → J29  (PPN — ada formula =ROUND(J27*0.12,0), kita override dengan nilai pasti)
-    #   Total       → J38  (hardcode) + J39 = formula =J25+J29
-    #   SayRupiah   → C41  |  Date → J41  |  Receiver → H48
-
-    # Bersihkan sisa data lama di template (J13 = 'xxxxxx.00x/...')
-    ws.cell(row=13, column=10).value = None
-    ws.cell(row=12, column=10).value = None  # J12 sisa generate sebelumnya
-
-    # Receipt No → L14
-    write_cell(14, 12, nomor_kwt)
-
-    # Nama klien → E12 (per TemplateInformation: Name1=E12)
-    write_cell(12, 5, project["nama_klien"])
-
-    # Alamat → E13 (baris1), E14 (baris2/Name2)
-    write_cell(13, 5, project["alamat_baris1"])
-    write_cell(14, 5, project["alamat_baris2"])
-
-    # City → E16, ZIP → G16
-    write_cell(16, 5, project["kota"])
-    write_cell(16, 7, project["kode_pos"])
-
-    # Description rows (B20-22), TANPA baris "sebesar:" duplikat di B23
-    write_cell(20, 2, f"Pembayaran jasa {project['jenis_pekerjaan']} {project['nama_klien']}")
-    write_cell(21, 2, f"sesuai dengan proposal No. {project['nomor_proposal']}")
-    write_cell(22, 2, f"tanggal {project['tanggal_proposal']}, sebesar:")
-    ws.cell(row=23, column=2).value = None  # hapus duplikat "sebesar:"
-
-    # ─── AMOUNTS ───
-    # J25 = Imbalan Jasa KRITIS — formula J27=(J25*11/12), J39=(J25+J29) semua ref J25
-    write_cell(25, 10, fin["imbalan_jasa"])   # ← J25 (bukan J24!)
-
-    # J26 = DPP PPN (override formula dengan nilai eksak agar tidak mismatch)
-    write_cell(26, 10, fin["dpb_ppn"])
-
-    # J28 = PPN 12% (override formula =ROUND(J27*0.12,0) dengan nilai pasti)
-    write_cell(28, 10, fin["ppn"])
-
-    # J38 = Total (hardcode, juga ada formula J39 tapi kita isi J38)
-    write_cell(38, 10, fin["total"])
-    write_cell(39, 10, fin["total"])          # J39 juga (formula =J25+J29 mungkin tidak recalc)
-
-    # Terbilang → C41, Tanggal → J41 (per TemplateInformation: SayRupiah=C41, Date=J41)
-    write_cell(41, 3, fin["terbilang"] + ".")
-    ws.cell(row=41, column=3).value = fin["terbilang"] + "."
-    ws.cell(row=40, column=3).value = None    # hapus sisa di C40
-    ws.cell(row=41, column=9).value = "Jakarta,"
-    write_cell(41, 10, tanggal_str)           # J41 = tanggal (string, bukan datetime)
-    ws.cell(row=40, column=9).value = None    # hapus sisa di I40
-
-    # Receiver → H48 (per TemplateInformation: Receiver=H48)
-    write_cell(48, 8, project["receiver"])
-    ws.cell(row=47, column=8).value = None    # hapus sisa di H47
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.read()
-
-
-# ─────────────────────────────────────────
-# SURAT TAGIHAN GENERATOR (python-docx)
+# DOKUMEN GENERATOR (python-docx) — Surat Tagihan + Kwitansi
 # ─────────────────────────────────────────
 def _normalize_para(para):
     """Rebuild paragraph full text from all runs, return joined string."""
@@ -710,91 +617,6 @@ def build_default_surat_template() -> bytes:
     doc.save(buf)
     buf.seek(0)
     return buf.read()
-
-
-def build_default_kwitansi_template() -> bytes:
-    """Build a minimal kwitansi XLSX template with the correct cell positions."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side, numbers
-    from openpyxl.utils import get_column_letter
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Sheet1"
-
-    thin = Side(style="thin")
-    border_box = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    def c(row, col, value, bold=False, align="left", size=10, wrap=False, number=False):
-        cell = ws.cell(row=row, column=col, value=value)
-        cell.font = Font(name="Arial", bold=bold, size=size)
-        cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=wrap)
-        if number and isinstance(value, (int, float)):
-            cell.number_format = '#,##0'
-        return cell
-
-    # KOP
-    c(3, 2, "SUWENDHO RINALDY DAN REKAN", bold=True, align="center", size=13)
-    c(4, 2, "KANTOR JASA PENILAI PUBLIK", align="center", size=9)
-    c(5, 2, "Nomor Izin Usaha KJPP: 2.09.0059 | Izin Cabang: 1138/KM.1/2017", align="center", size=8)
-
-    # Title KWITANSI
-    c(7, 5, "KWITANSI", bold=True, align="center", size=16)
-
-    # Receipt No label + value
-    c(11, 4, "Name", bold=False, size=9)
-    c(11, 5, ":  [NAMA KLIEN]", size=9)      # placeholder untuk referensi user
-    c(12, 10, "[NOMOR KWT]", size=9)         # Receipt No
-
-    c(13, 4, "Address", size=9)
-    c(13, 5, ":  [ALAMAT 1]", size=9)
-    c(14, 5, "   [ALAMAT 2]", size=9)
-    c(15, 4, "City", size=9)
-    c(15, 5, ":  [KOTA]", size=9)
-    c(15, 6, "ZIP", size=9)
-    c(15, 7, "[KODEPOS]", size=9)
-    c(10, 10, "Receipt No.", bold=True, size=9)
-
-    # Description header
-    c(18, 2, "Description", bold=True, size=10)
-    c(18, 10, "Amount (Rp)", bold=True, align="right", size=10)
-
-    c(20, 2, "[KETERANGAN PEKERJAAN]", size=10)
-    c(21, 2, "[NOMOR PROPOSAL]", size=10)
-    c(22, 2, "[TANGGAL PROPOSAL]", size=10)
-
-    c(24, 2, "Imbalan Jasa", size=10)
-    c(24, 10, 0, align="right", number=True, size=10)
-
-    c(26, 2, "Dasar Pengenaan PPN (Imbalan Jasa x 11/12)", size=10)
-    c(26, 10, 0, align="right", number=True, size=10)
-
-    c(28, 2, "PPN 12%", size=10)
-    c(28, 10, 0, align="right", number=True, size=10)
-
-    c(38, 9, "Total", bold=True, size=11)
-    c(38, 10, 0, bold=True, align="right", number=True, size=11)
-
-    c(39, 2, "Say Rupiah :", bold=True, size=10)
-    c(40, 3, "[TERBILANG]", size=10)
-    c(40, 9, "Jakarta,", size=10)
-    c(40, 10, "[TANGGAL]", size=10)
-
-    c(47, 8, "[PENERIMA]", size=10)
-
-    # Footer bank
-    c(51, 2, "Pembayaran melalui Bank Mandiri KCP JKT Kalibata Rawajati, atas nama KJPP Suwendho Rinaldy & Rekan No. Rek. 126-0005748719", size=8)
-
-    # Column widths
-    col_widths = {1: 4, 2: 30, 3: 20, 4: 12, 5: 28, 6: 6, 7: 8, 8: 18, 9: 10, 10: 18}
-    for col, w in col_widths.items():
-        ws.column_dimensions[get_column_letter(col)].width = w
-
-    buf = io.BytesIO()
-    wb.save(buf)
-    buf.seek(0)
-    return buf.read()
-
 
 
 # ─────────────────────────────────────────
@@ -1146,11 +968,10 @@ def render_proposal_text(p: dict) -> str:
 # ─────────────────────────────────────────
 # SESSION STATE INIT
 # ─────────────────────────────────────────
-if "projects"        not in st.session_state: st.session_state.projects = []
-if "kwt_template"    not in st.session_state: st.session_state.kwt_template = None
-if "sk_template"     not in st.session_state: st.session_state.sk_template = None
-if "seq_counter"     not in st.session_state: st.session_state.seq_counter = 1
-if "edit_idx"        not in st.session_state: st.session_state.edit_idx = None
+if "projects"    not in st.session_state: st.session_state.projects = []
+if "sk_template" not in st.session_state: st.session_state.sk_template = None
+if "seq_counter" not in st.session_state: st.session_state.seq_counter = 1
+if "edit_idx"    not in st.session_state: st.session_state.edit_idx = None
 
 
 # ─────────────────────────────────────────
@@ -1180,36 +1001,25 @@ with st.sidebar:
     st.divider()
     st.markdown("### 📎 Upload Template")
 
-    kwt_upload = st.file_uploader("Template Kwitansi (.xlsx)", type=["xlsx", "xls"],
-                                   key="kwt_up",
-                                   help="Upload template kwitansi .xlsx Anda")
-    if kwt_upload:
-        if kwt_upload.name.endswith(".xls"):
-            st.warning("Format .xls terdeteksi. Konversi ke .xlsx disarankan untuk hasil terbaik.")
-        else:
-            st.session_state.kwt_template = kwt_upload.read()
-            st.success("✅ Template kwitansi tersimpan")
-
-    sk_upload = st.file_uploader("Template Surat Tagihan (.docx)", type=["docx"],
-                                  key="sk_up",
-                                  help="Upload template surat tagihan .docx dengan placeholder {{NAMA_KLIEN}} dll")
+    sk_upload = st.file_uploader(
+        "Template Dokumen (.docx)",
+        type=["docx"],
+        key="sk_up",
+        help="Upload template DOCX yang berisi placeholder {{Nomor_Srt}}, {{PEMBERI_TUGAS}}, dll."
+    )
     if sk_upload:
         st.session_state.sk_template = sk_upload.read()
-        # Detect template mode and inform user
         mode = _detect_template_mode(st.session_state.sk_template)
         if mode == "placeholder":
-            st.success("✅ Template surat tersimpan — mode **{{Placeholder}}** terdeteksi")
+            st.success("✅ Template tersimpan — mode **{{Placeholder}}** terdeteksi")
         else:
             st.warning(
-                "⚠️ Template surat tersimpan — **mode Heuristic** (teks lama diganti otomatis). "
-                "Untuk hasil terbaik, edit template di Word dan tambahkan "
-                "`{{NAMA_KLIEN}}`, `{{NOMOR_SURAT}}`, dll. sebagai placeholder."
+                "⚠️ Template tersimpan — **mode Heuristic**. "
+                "Untuk hasil terbaik, gunakan placeholder `{{Nomor_Srt}}`, `{{PEMBERI_TUGAS}}`, dll."
             )
 
-    if not st.session_state.kwt_template:
-        st.info("ℹ️ Belum ada template kwitansi — akan gunakan template default SRR")
     if not st.session_state.sk_template:
-        st.info("ℹ️ Belum ada template surat — akan gunakan template default SRR")
+        st.info("ℹ️ Belum ada template — akan gunakan template default SRR")
 
     st.divider()
     st.markdown("#### 💡 Placeholder Surat")
@@ -1604,8 +1414,7 @@ with tab3:
         n = len(st.session_state.projects)
         st.success(f"**{n} proyek** siap di-generate.")
 
-        kwt_tpl  = st.session_state.kwt_template or build_default_kwitansi_template()
-        sk_tpl   = st.session_state.sk_template  or build_default_surat_template()
+        doc_tpl = st.session_state.sk_template or build_default_surat_template()
 
         if st.button("⚡ Generate Semua Dokumen", type="primary", use_container_width=True):
             zip_buf = io.BytesIO()
@@ -1613,24 +1422,17 @@ with tab3:
 
             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 for i, proj in enumerate(st.session_state.projects):
-                    seq  = st.session_state.seq_counter + i
-                    kode = proj["nama_klien_singkat"].upper()[:8]
+                    seq     = st.session_state.seq_counter + i
+                    kode    = proj["nama_klien_singkat"].upper()[:8]
                     tanggal = proj.get("tanggal_tagihan_date", date.today())
                     prefix  = tanggal.strftime("%y%m%d")
 
                     try:
-                        kwt_bytes = generate_kwitansi(kwt_tpl, proj, seq)
-                        kwt_fname = f"{prefix}_{seq:03d}-KW-B-{kode}_Tagihan.xlsx"
-                        zf.writestr(kwt_fname, kwt_bytes)
+                        doc_bytes = generate_surat(doc_tpl, proj, seq)
+                        doc_fname = f"{prefix}_{seq:03d}-SK-OR-{kode}_Tagihan.docx"
+                        zf.writestr(doc_fname, doc_bytes)
                     except Exception as e:
-                        errors.append(f"Kwitansi #{i+1} ({kode}): {e}")
-
-                    try:
-                        sk_bytes  = generate_surat(sk_tpl, proj, seq)
-                        sk_fname  = f"{prefix}_{seq:03d}-SK-OR-{kode}_Tagihan.docx"
-                        zf.writestr(sk_fname, sk_bytes)
-                    except Exception as e:
-                        errors.append(f"Surat #{i+1} ({kode}): {e}")
+                        errors.append(f"Dokumen #{i+1} ({kode}): {e}")
 
             zip_buf.seek(0)
 
@@ -1639,7 +1441,7 @@ with tab3:
                     st.error(f"⚠️ {err}")
 
             st.download_button(
-                label=f"📦 Download ZIP ({n} kwitansi + {n} surat tagihan)",
+                label=f"📦 Download ZIP ({n} dokumen tagihan)",
                 data=zip_buf.read(),
                 file_name=f"SRR_Tagihan_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
                 mime="application/zip",
@@ -1650,42 +1452,27 @@ with tab3:
         st.divider()
         st.markdown("#### 📄 Download Individual")
 
-        kwt_tpl_ind = st.session_state.kwt_template or build_default_kwitansi_template()
-        sk_tpl_ind  = st.session_state.sk_template  or build_default_surat_template()
+        doc_tpl_ind = st.session_state.sk_template or build_default_surat_template()
 
         for i, proj in enumerate(st.session_state.projects):
-            seq   = st.session_state.seq_counter + i
-            kode  = proj["nama_klien_singkat"].upper()[:8]
+            seq     = st.session_state.seq_counter + i
+            kode    = proj["nama_klien_singkat"].upper()[:8]
             tanggal = proj.get("tanggal_tagihan_date", date.today())
-            fin   = hitung_tagihan(proj["imbalan_jasa_total"])
+            fin     = hitung_tagihan(proj["imbalan_jasa_total"])
 
             with st.expander(f"#{i+1} — {proj['nama_klien']} | Total: Rp {fin['total']:,.0f}"):
-                cA, cB = st.columns(2)
-                with cA:
-                    try:
-                        kwt_b = generate_kwitansi(kwt_tpl_ind, proj, seq)
-                        st.download_button(
-                            f"📊 Kwitansi ({kode})",
-                            data=kwt_b,
-                            file_name=f"KWT_{kode}_{tanggal.strftime('%y%m%d')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key=f"kwt_{i}"
-                        )
-                    except Exception as e:
-                        st.error(f"Error kwitansi: {e}")
-
-                with cB:
-                    try:
-                        sk_b = generate_surat(sk_tpl_ind, proj, seq)
-                        st.download_button(
-                            f"📝 Surat Tagihan ({kode})",
-                            data=sk_b,
-                            file_name=f"SKOR_{kode}_{tanggal.strftime('%y%m%d')}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            key=f"sk_{i}"
-                        )
-                    except Exception as e:
-                        st.error(f"Error surat: {e}")
+                try:
+                    doc_b = generate_surat(doc_tpl_ind, proj, seq)
+                    st.download_button(
+                        f"📝 Download Dokumen Tagihan ({kode})",
+                        data=doc_b,
+                        file_name=f"SKOR_{kode}_{tanggal.strftime('%y%m%d')}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"doc_{i}",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error(f"Error generate dokumen: {e}")
 
         st.divider()
         if st.button("🗑️ Hapus Semua Proyek", type="secondary"):
