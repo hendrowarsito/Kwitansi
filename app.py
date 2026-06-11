@@ -8,10 +8,8 @@ import anthropic
 import json
 import io
 import zipfile
-import base64
 import re
 from datetime import datetime, date
-from copy import deepcopy
 
 # ── python-docx (template docx)
 from docx import Document
