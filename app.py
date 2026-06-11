@@ -260,8 +260,13 @@ JSON:"""
             "kota": "", "kode_pos": "", "up": "Direksi",
             "jenis_pekerjaan": "", "nomor_proposal": "",
             "tanggal_proposal": "", "imbalan_jasa_total": 0,
-            "tanggal_tagihan": "", "receiver": "Ocky Rinaldy"
+            "tanggal_tagihan": "", "receiver": "Ocky Rinaldy",
+            "tagih_ke": "Pertama",
         }
+
+    # Ensure tagih_ke has default value
+    if not data.get("tagih_ke"):
+        data["tagih_ke"] = "Pertama"
 
     # Ensure numeric
     try:
@@ -503,7 +508,7 @@ def _build_heuristic_replacements(template_bytes: bytes, project: dict,
             hal_m = re.search(r'Penagihan Pembayaran (.+)', t)
             if hal_m:
                 old_hal = hal_m.group(1).strip()
-                new_hal = f"Pembayaran Jasa {project['jenis_pekerjaan']} {project['nama_klien_singkat']}"
+                new_hal = f"Jasa {project['jenis_pekerjaan']} {project['nama_klien_singkat']}"
                 replacements[old_hal] = new_hal
                 break
 
@@ -527,7 +532,47 @@ def generate_surat(template_bytes: bytes, project: dict, seq: int) -> bytes:
 
     if mode == "placeholder":
         # Mode 1: Template dengan {{PLACEHOLDER}} — exact replace
+        # Pisah nomor menjadi prefix (YYMMDD.NNN) dan kode klien untuk template SRR aktual
+        nomor_prefix  = f"{tanggal.strftime('%y%m%d')}.{seq:03d}"
+        kode_pt       = project["nama_klien_singkat"].upper().replace(" ", "").replace(".", "")[:8]
+        nomor_kwt_str = generate_nomor(tanggal, seq, "KWT.PJK", project["nama_klien_singkat"])
+
+        tagih_ke      = project.get("tagih_ke", "Pertama")
+        fee_fmt       = f"Rp {project['imbalan_jasa_total']:,.0f}".replace(",", ".")
+        fee_tagih_fmt = f"{fin['imbalan_jasa']:,.0f}".replace(",", ".")
+        dpp_fmt       = f"{fin['dpb_ppn']:,.0f}".replace(",", ".")
+        ppn_fmt       = f"{fin['ppn']:,.0f}".replace(",", ".")
+        jml_fmt       = f"{fin['total']:,.0f}".replace(",", ".")
+
         replacements = {
+            # ── Template SRR aktual (token panjang didahulukan agar tidak partial-match)
+            "{{Nomor_Srt}}//SRR-JK/KWT.PJK": nomor_kwt_str,
+            "{{Nomor_Srt}}":        nomor_prefix,
+            "{{Kode_PT}}":          kode_pt,
+            "{{Tgl_Srt}}":          tanggal_str,
+            "{{PEMBERI_TUGAS}}":    project["nama_klien"],
+            "{{Pemberi_Tugas}}":    project["nama_klien"],
+            "{{Alamat1}}":          project["alamat_baris1"],
+            "{{Alamat2}}":          project["alamat_baris2"],
+            "{{Kota}}":             project["kota"],
+            "{{Kode_Pos}}":         project["kode_pos"],
+            "{{Up}}":               project["up"],
+            "{{Tagih_ke}}":         tagih_ke,
+            "{{tagih_ke}}":         tagih_ke.lower(),
+            "{{Pekerjaan}}":        project["jenis_pekerjaan"],
+            "{{Nomor_Proposal}}":   project["nomor_proposal"],
+            "{{Tanggal_Proposal}}": project["tanggal_proposal"],
+            "{{Jumlah_Terbilang}}": fin["terbilang"],
+            "{{Bank}}":             "Bank Mandiri KCP JKT Kalibata Rawajati",
+            "{{Norek}}":            "126-0005748719",
+            "{{title_Up}}":         project.get("title_up", "Bapak/Ibu"),
+            "{{persentase}}":       project.get("persentase", "100%"),
+            "{{Fee}}":              fee_fmt,
+            "{{Fee_Tagih}}":        fee_tagih_fmt,
+            "{{DPP}}":              dpp_fmt,
+            "{{PPN}}":              ppn_fmt,
+            "{{Jumlah}}":           jml_fmt,
+            # ── Legacy placeholder (template default lama) — tetap didukung
             "{{NOMOR_SURAT}}":        nomor_sk,
             "{{TANGGAL_SURAT}}":      tanggal_str,
             "{{NAMA_KLIEN}}":         project["nama_klien"],
@@ -536,7 +581,6 @@ def generate_surat(template_bytes: bytes, project: dict, seq: int) -> bytes:
             "{{KOTA_POS}}":           f"{project['kota']} {project['kode_pos']}".strip(),
             "{{UP}}":                 project["up"],
             "{{JENIS_PEKERJAAN}}":    project["jenis_pekerjaan"],
-            "{{NOMOR_PROPOSAL}}":     project["nomor_proposal"],
             "{{TGL_PROPOSAL}}":       project["tanggal_proposal"],
             "{{TERBILANG}}":          fin["terbilang"],
             "{{TOTAL_ANGKA}}":        total_fmt,
@@ -604,30 +648,29 @@ def build_default_surat_template() -> bytes:
     add_para("─" * 80, align=WD_ALIGN_PARAGRAPH.CENTER, size=9, space_after=12)
 
     # Nomor & Tanggal
-    add_para("No. : {{NOMOR_SURAT}}                                    {{TANGGAL_SURAT}}", size=11)
+    add_para("No. : {{Nomor_Srt}}/SRR-JK/SK-OR/{{Kode_PT}}\t\t{{Tgl_Srt}}", size=11)
     add_para("")
 
     # Kepada
     add_para("Kepada Yth.", size=11)
-    add_para("{{NAMA_KLIEN}}", bold=True, size=11)
-    add_para("{{ALAMAT1}}", bold=True, size=11)
-    add_para("{{ALAMAT2}}", bold=True, size=11)
-    add_para("{{KOTA_POS}}", bold=True, size=11)
+    add_para("{{PEMBERI_TUGAS}}", bold=True, size=11)
+    add_para("{{Alamat1}}", bold=True, size=11)
+    add_para("{{Alamat2}}", bold=True, size=11)
+    add_para("{{Kota}} {{Kode_Pos}}", bold=True, size=11)
     add_para("")
-    add_para("U.p.  :  {{UP}}", size=11)
+    add_para("U.p.\t:\t{{Up}}", size=11)
     add_para("")
 
     # Hal
-    add_para("Hal   :  Penagihan Pembayaran Jasa {{JENIS_PEKERJAAN}}", bold=True, size=11)
-    add_para("          {{NAMA_KLIEN_SINGKAT}}", bold=True, size=11)
+    add_para("Hal\t:\tPenagihan Pembayaran {{Tagih_ke}} {{Pekerjaan}}", bold=True, size=11)
     add_para("")
     add_para("Dengan hormat,", size=11)
     add_para("")
 
     # Body
     body = (
-        "Menunjuk surat penawaran kami No. {{NOMOR_PROPOSAL}} tanggal {{TGL_PROPOSAL}}, "
-        "maka dengan ini kami mohon agar pembayaran untuk penugasan tersebut sebesar:"
+        "Menunjuk surat penawaran kami No. {{Nomor_Proposal}} tanggal {{Tanggal_Proposal}}, "
+        "maka dengan ini kami mohon agar pembayaran {{tagih_ke}} untuk penugasan tersebut sebesar:"
     )
     add_para(body, size=11, space_after=12)
     add_para("")
@@ -635,7 +678,7 @@ def build_default_surat_template() -> bytes:
     # Nominal box
     p_box = doc.add_paragraph()
     p_box.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p_box.add_run("{{TOTAL_ANGKA}}")
+    r = p_box.add_run("Rp {{Jumlah}}")
     r.bold = True
     r.font.size = Pt(14)
     r.font.name = "Times New Roman"
@@ -643,7 +686,7 @@ def build_default_surat_template() -> bytes:
     p_terb = doc.add_paragraph()
     p_terb.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_terb.paragraph_format.space_after = Pt(12)
-    r2 = p_terb.add_run("(  {{TERBILANG}}  )")
+    r2 = p_terb.add_run("(  {{Jumlah_Terbilang}}  )")
     r2.font.size = Pt(11)
     r2.font.name = "Times New Roman"
 
@@ -651,12 +694,11 @@ def build_default_surat_template() -> bytes:
     add_para(
         "(kwitansi dan faktur PPN terlampir) dapat dibayarkan kepada kami dengan bilyet giro "
         "atau ditransfer ke rekening kami atas nama KJPP SUWENDHO RINALDY & REKAN di "
-        "Bank Mandiri KCP JKT Kalibata Rawajati dengan nomor rekening 126-0005748719 "
-        "pada kesempatan pertama.",
+        "{{Bank}} dengan nomor rekening {{Norek}} pada kesempatan pertama.",
         size=11, space_after=12
     )
     add_para("")
-    add_para("Demikianlah permohonan kami, atas perhatian dan kerja sama Bapak/Ibu kami ucapkan terima kasih.", size=11)
+    add_para("Demikianlah permohonan kami, atas perhatian dan kerja sama {{title_Up}} kami ucapkan terima kasih.", size=11)
     add_para("")
     add_para("Hormat kami,", size=11)
     add_para("")
@@ -1172,20 +1214,32 @@ with st.sidebar:
     st.divider()
     st.markdown("#### 💡 Placeholder Surat")
     with st.expander("Lihat daftar placeholder"):
-        st.code("""{{NOMOR_SURAT}}
-{{TANGGAL_SURAT}}
-{{NAMA_KLIEN}}
-{{ALAMAT1}}
-{{ALAMAT2}}
-{{KOTA_POS}}
-{{UP}}
-{{JENIS_PEKERJAAN}}
-{{NOMOR_PROPOSAL}}
-{{TGL_PROPOSAL}}
-{{TERBILANG}}
-{{TOTAL_ANGKA}}
-{{RECEIVER}}
-{{NAMA_KLIEN_SINGKAT}}""", language="text")
+        st.code("""{{Nomor_Srt}}        ← prefix nomor (YYMMDD.NNN)
+{{Kode_PT}}         ← kode klien (misal: PTRO)
+{{Tgl_Srt}}         ← tanggal surat
+{{PEMBERI_TUGAS}}   ← nama klien lengkap
+{{Alamat1}}         ← alamat baris 1
+{{Alamat2}}         ← alamat baris 2
+{{Kota}}            ← kota
+{{Kode_Pos}}        ← kode pos
+{{Up}}              ← jabatan penerima
+{{Tagih_ke}}        ← urutan penagihan (Pertama/Kedua/…)
+{{tagih_ke}}        ← idem, huruf kecil
+{{Pekerjaan}}       ← jenis pekerjaan
+{{Nomor_Proposal}}  ← nomor proposal
+{{Tanggal_Proposal}}← tanggal proposal
+{{Jumlah_Terbilang}}← terbilang total
+{{Fee}}             ← imbalan jasa (Rp)
+{{Fee_Tagih}}       ← imbalan jasa yang ditagih
+{{DPP}}             ← dasar pengenaan PPN
+{{PPN}}             ← nilai PPN 12%
+{{Jumlah}}          ← total (Fee + PPN)
+{{Bank}}            ← nama bank
+{{Norek}}           ← nomor rekening
+{{title_Up}}        ← sapaan penutup (Bapak/Ibu)
+{{persentase}}      ← persentase tagih (100%)
+{{RECEIVER}}        ← nama penandatangan""", language="text")
+        st.caption("Template lama ({{NOMOR_SURAT}}, {{NAMA_KLIEN}}, dll.) tetap didukung.")
 
 
 # ─────────────────────────────────────────
@@ -1260,6 +1314,8 @@ with tab1:
                                               help="Contoh: Penilaian Saham dan Pendapat Kewajaran")
                 m_noprop     = st.text_input("Nomor Proposal")
                 m_tglprop    = st.text_input("Tanggal Proposal", help="Contoh: 12 Januari 2026")
+                m_tagih_ke   = st.text_input("Tagih ke (Urutan Penagihan)", value="Pertama",
+                                              help="Contoh: Pertama, Kedua, Ketiga")
             with c4:
                 m_fee        = st.number_input("Imbalan Jasa (Rp, sebelum PPN) *",
                                                min_value=0, step=1000000)
@@ -1290,6 +1346,7 @@ with tab1:
                         "jenis_pekerjaan": m_pekerjaan,
                         "nomor_proposal": m_noprop,
                         "tanggal_proposal": m_tglprop,
+                        "tagih_ke": m_tagih_ke,
                         "imbalan_jasa_total": int(m_fee),
                         "tanggal_tagihan_date": m_tgltagih,
                         "receiver": m_receiver_f,
@@ -1371,6 +1428,9 @@ with tab2:
                 e_noprop    = st.text_input("Nomor Proposal", value=p["nomor_proposal"])
                 e_tglprop   = st.text_input("Tanggal Proposal", value=p["tanggal_proposal"],
                                             help="Contoh: 12 Januari 2026")
+                e_tagih_ke  = st.text_input("Tagih ke (Urutan Penagihan)",
+                                            value=p.get("tagih_ke", "Pertama"),
+                                            help="Contoh: Pertama, Kedua, Ketiga")
 
                 st.markdown("**Tagihan**")
                 e_fee = st.number_input("Imbalan Jasa (Rp, sebelum PPN)",
@@ -1409,6 +1469,7 @@ with tab2:
                         "jenis_pekerjaan":     e_pekerjaan,
                         "nomor_proposal":      e_noprop,
                         "tanggal_proposal":    e_tglprop,
+                        "tagih_ke":            e_tagih_ke,
                         "imbalan_jasa_total":  int(e_fee),
                         "tanggal_tagihan_date":e_tgltagih,
                         "receiver":            e_receiver,
