@@ -15,8 +15,7 @@ from datetime import datetime, date
 from docx import Document
 from docx.shared import Pt
 
-# ── PDF reading
-import pdfplumber
+import base64
 
 # ─────────────────────────────────────────
 # PAGE CONFIG
@@ -178,42 +177,20 @@ def format_tanggal_indo(d: date) -> str:
 # ─────────────────────────────────────────
 # CLAUDE API — EXTRACT FROM PDF/DOCX
 # ─────────────────────────────────────────
-def extract_proposal_data(file_bytes: bytes, filename: str) -> dict:
-    """Use Claude API to extract structured data from proposal PDF/DOCX"""
+_EXTRACT_PROMPT = """Kamu adalah asisten ekstraksi data dari proposal jasa penilaian KJPP SRR (Suwendho Rinaldy dan Rekan).
 
-    # Extract text from PDF
-    if filename.lower().endswith(".pdf"):
-        text_parts = []
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    text_parts.append(t)
-        raw_text = "\n".join(text_parts)
-    else:
-        # DOCX: extract paragraphs
-        doc = Document(io.BytesIO(file_bytes))
-        raw_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-
-    # Limit text to ~8000 chars — tambah batas agar bagian fee tidak terpotong
-    raw_text = raw_text[:8000]
-
-    client = anthropic.Anthropic()
-    prompt = f"""Kamu adalah asisten ekstraksi data dari proposal jasa penilaian KJPP SRR (Suwendho Rinaldy dan Rekan).
-
-Ekstrak informasi berikut dari teks proposal dan kembalikan HANYA JSON valid (tanpa komentar, tanpa markdown backtick).
+Ekstrak informasi berikut dan kembalikan HANYA JSON valid (tanpa komentar, tanpa markdown backtick).
 
 PETUNJUK PENTING untuk imbalan_jasa_total:
 - Cari bagian "Imbalan Jasa", "Fee", atau "Biaya" dalam proposal
 - Ambil TOTAL sebelum PPN (bukan nilai setelah ditambah PPN)
-- Jika ada beberapa komponen fee (misal: Penilaian Aset + Penilaian Saham), JUMLAHKAN semuanya
+- Jika ada beberapa komponen fee, JUMLAHKAN semuanya
 - Nilai ini biasanya ada di baris "Jumlah Imbalan Jasa/Fee" atau "Total Fee"
-- Contoh: "Rp 200.000.000" → 200000000, "Rp 1.025.000.000" → 1025000000
-- Abaikan titik sebagai pemisah ribuan, abaikan "Rp"
+- Contoh: "Rp 200.000.000" → 200000000
 - Jika benar-benar tidak ditemukan, isi 0
 
 Field JSON yang dibutuhkan:
-{{
+{
   "nama_klien": "nama lengkap perusahaan klien (PT/CV/instansi)",
   "nama_klien_singkat": "akronim atau kode klien 2-8 huruf, contoh: PTRO, IDXSTI, BPID",
   "alamat_baris1": "baris pertama alamat klien (gedung/nama lokasi)",
@@ -221,25 +198,55 @@ Field JSON yang dibutuhkan:
   "kota": "nama kota (contoh: Jakarta, Jakarta Selatan)",
   "kode_pos": "kode pos 5 digit sebagai string",
   "up": "jabatan penerima surat (contoh: Direksi, Direktur Utama)",
-  "jenis_pekerjaan": "deskripsi singkat jenis pekerjaan tanpa nama klien (contoh: Penilaian Saham dan Pendapat Kewajaran)",
-  "nomor_proposal": "nomor proposal lengkap (contoh: 260112.001/SRR-JK/SPN-ABF/PTRO/OR)",
+  "jenis_pekerjaan": "deskripsi singkat jenis pekerjaan tanpa nama klien",
+  "nomor_proposal": "nomor proposal lengkap",
   "tanggal_proposal": "tanggal proposal format DD Bulan YYYY (contoh: 12 Januari 2026)",
   "imbalan_jasa_total": 0,
   "receiver": "nama penandatangan dari SRR di akhir proposal (biasanya Ocky Rinaldy)"
-}}
+}
 
 Jika field tidak ditemukan: string kosong "" untuk teks, 0 untuk angka.
 
-TEKS PROPOSAL:
-{raw_text}
-
 JSON:"""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}]
-    )
+
+def extract_proposal_data(file_bytes: bytes, filename: str) -> dict:
+    """Use Claude API to extract structured data from proposal PDF/DOCX.
+    PDF dikirim langsung ke API sebagai dokumen; DOCX diekstrak teksnya.
+    """
+    client = anthropic.Anthropic()
+
+    if filename.lower().endswith(".pdf"):
+        # Kirim PDF langsung ke Claude — tidak perlu library PDF parsing
+        pdf_b64 = base64.standard_b64encode(file_bytes).decode("utf-8")
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf_b64,
+                        },
+                    },
+                    {"type": "text", "text": _EXTRACT_PROMPT},
+                ],
+            }],
+        )
+    else:
+        # DOCX: ekstrak teks lalu kirim ke Claude
+        doc = Document(io.BytesIO(file_bytes))
+        raw_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())[:8000]
+        prompt = _EXTRACT_PROMPT.replace("JSON:", f"TEKS PROPOSAL:\n{raw_text}\n\nJSON:")
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}],
+        )
 
     raw = response.content[0].text.strip()
     raw = raw.replace("```json", "").replace("```", "").strip()
@@ -906,19 +913,22 @@ def render_proposal_text(p: dict) -> str:
     if not proposal_bytes:
         return None
 
-    # Ekstrak teks
+    # Ekstrak teks (hanya DOCX; PDF langsung dikirim ke Claude API)
     try:
         if proposal_name.lower().endswith(".pdf"):
-            with pdfplumber.open(io.BytesIO(proposal_bytes)) as pdf:
-                pages = []
-                for pg in pdf.pages:
-                    t = pg.extract_text()
-                    if t:
-                        pages.append(t)
-            raw = "\n".join(pages)
-        else:
-            doc = Document(io.BytesIO(proposal_bytes))
-            raw = "\n".join(para.text for para in doc.paragraphs if para.text.strip())
+            import html as html_mod
+            return f"""
+<div style="
+    font-family: sans-serif; font-size: 11px; color: #6b7280;
+    background: #f9fafb; border: 1px solid #e5e7eb;
+    border-radius: 8px; padding: 16px; text-align: center;
+">
+    📄 <strong>{html_mod.escape(proposal_name)}</strong><br><br>
+    Preview teks tidak tersedia untuk file PDF.<br>
+    Data diekstrak langsung oleh AI dari file PDF asli.
+</div>"""
+        doc = Document(io.BytesIO(proposal_bytes))
+        raw = "\n".join(para.text for para in doc.paragraphs if para.text.strip())
     except Exception:
         return None
 
