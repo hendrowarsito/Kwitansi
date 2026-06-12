@@ -1,67 +1,61 @@
-# SRR Billing Generator
+# Surat Penagihan SRR - Generator
 
-Generator kwitansi & surat penagihan semi-otomatis untuk KJPP Suwendho Rinaldy dan Rekan.
+Aplikasi Streamlit untuk membuat surat penagihan KJPP Suwendho Rinaldy dan Rekan.
 
 ## Fitur
-- 🤖 Ekstraksi otomatis dari PDF/DOCX proposal menggunakan Claude AI
-- ✏️ Edit manual semua field sebelum generate
-- 📊 Output kwitansi (.xlsx) dengan format SRR
-- 📝 Output surat tagihan (.docx) dengan placeholder Jinja-style
-- 📦 Download ZIP untuk batch (banyak proyek sekaligus)
-- 🔢 Nomor surat & kwitansi otomatis (YYMMDD.SEQ/SRR-JK/...)
-- 💰 Kalkulasi DPP + PPN 12% otomatis (formula KJPP SRR: DPP = IJ × 11/12)
 
-## Deploy ke Streamlit Cloud
+- Ambil data pemberi tugas dari Google Sheets secara otomatis
+- Dropdown pemberi tugas (diurutkan A-Z)
+- Upload template surat penagihan (.docx)
+- Pengisian otomatis semua placeholder `{{...}}`
+- Kalkulasi otomatis Fee, DPP, PPN, Jumlah
+- Konversi angka ke terbilang Bahasa Indonesia
+- Simpan sementara beberapa dokumen sekaligus
+- Download individual atau ZIP semua dokumen
 
-1. Push repo ke GitHub
-2. Buka [share.streamlit.io](https://share.streamlit.io)
-3. Connect repo, set `app.py` sebagai main file
-4. Di **Secrets**, tambahkan:
-   ```toml
-   ANTHROPIC_API_KEY = "sk-ant-..."
-   ```
+## Cara Deploy ke Streamlit Cloud
 
-## Penggunaan Template Custom
+1. Push folder ini ke GitHub repository
+2. Buka https://streamlit.io/cloud
+3. New app → pilih repo → set `app.py` sebagai entrypoint
+4. Deploy
 
-### Template Surat Tagihan (.docx)
-Buka file .docx Anda di Word, ganti teks yang ingin diisi otomatis dengan placeholder:
+## Cara Jalankan Lokal
 
-| Placeholder | Isi |
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## Placeholder Template
+
+| Placeholder | Sumber |
 |---|---|
-| `{{NOMOR_SURAT}}` | Nomor surat otomatis |
-| `{{TANGGAL_SURAT}}` | Tanggal tagihan (format Indonesia) |
-| `{{NAMA_KLIEN}}` | Nama lengkap klien |
-| `{{ALAMAT1}}` | Alamat baris 1 |
-| `{{ALAMAT2}}` | Alamat baris 2 |
-| `{{KOTA_POS}}` | Kota + kode pos |
-| `{{UP}}` | Jabatan penerima (Up.) |
-| `{{JENIS_PEKERJAAN}}` | Jenis pekerjaan |
-| `{{NOMOR_PROPOSAL}}` | Nomor proposal |
-| `{{TGL_PROPOSAL}}` | Tanggal proposal |
-| `{{TERBILANG}}` | Jumlah terbilang Rupiah |
-| `{{TOTAL_ANGKA}}` | Jumlah dalam angka (Rp X.XXX.XXX) |
-| `{{RECEIVER}}` | Nama penandatangan |
-| `{{NAMA_KLIEN_SINGKAT}}` | Kode/singkatan klien |
+| `{{Nomor_Srt}}` | Auto: YYMMDD.NNN |
+| `{{Kode_PT}}` | Input manual |
+| `{{Tgl_Srt}}` | Input tanggal |
+| `{{pemberi_tugas}}` | Google Sheets |
+| `{{alamat_1}}`, `{{alamat_2}}` | Google Sheets |
+| `{{kota}}`, `{{kode_pos}}` | Google Sheets |
+| `{{up}}` | Google Sheets |
+| `{{penugasan}}` | Google Sheets |
+| `{{Tagih_ke}}` / `{{tagih_ke}}` | Input manual |
+| `{{no_proposal}}` | Google Sheets |
+| `{{tanggal_proposal}}` | Google Sheets |
+| `{{proposed_fee}}` | Google Sheets |
+| `{{persentase}}` | Input manual |
+| `{{Fee_Tagih}}` | Auto: proposed_fee × persentase |
+| `{{DPP}}` | Auto: Fee × 11/12 |
+| `{{PPN}}` | Auto: 12% × DPP |
+| `{{Jumlah}}` | Auto: Fee + PPN |
+| `{{Jumlah_Terbilang}}` | Auto: terbilang(Jumlah) |
+| `{{Bank}}` | Dropdown |
+| `{{Norek}}` | Dropdown |
+| `{{title_Up}}` / `{{title_up}}` | Input manual |
 
-### Template Kwitansi (.xlsx)
-Upload template .xlsx Anda. Aplikasi akan menulis data ke posisi cell yang sesuai dengan template kwitansi SRR standar.
+## Rekening Bank (dapat disesuaikan di app.py)
 
-> **Catatan**: Jika tidak upload template, aplikasi menggunakan template default SRR.
-
-## Struktur Proyek
-
-```
-srr_billing_generator/
-├── app.py                    # Main Streamlit app
-├── requirements.txt
-└── .streamlit/
-    └── config.toml
-```
-
-## Formula Perhitungan
-Sesuai pola KJPP SRR (terverifikasi dari contoh kwitansi):
-```
-DPP PPN  = Imbalan Jasa × (11/12)
-PPN 12%  = DPP × 12%
-Total    = Imbalan Jasa + PPN 12%
-```
+- BCA - 747.051.7171
+- Bank Mandiri - 122.000.637.7309
+- BNI - 0965.7887.32
+- BRI - 0059.01.006699.30.7
